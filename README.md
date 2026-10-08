@@ -17,7 +17,10 @@ the four legs LR , KNN ( could be long ) , DT , RF ( could be isolated forest )
 5. add backend
 
 f it
+```
+gender	age	hypertension	heart_disease	smoking_history	bmi	HbA1c_level	blood_glucose_level	diabetes
 
+```
 
 # project Structure
 ```
