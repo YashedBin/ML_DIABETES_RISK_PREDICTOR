@@ -1,0 +1,34 @@
+[
+  {
+    "Model": "knn",
+    "Accuracy": 0.9566,
+    "Precision": 0.8463,
+    "Recall": 0.6203,
+    "F1 Score": 0.7159,
+    "ROC-AUC": 0.901
+  },
+  {
+    "Model": "random_forest",
+    "Accuracy": 0.9124,
+    "Precision": 0.502,
+    "Recall": 0.8992,
+    "F1 Score": 0.6443,
+    "ROC-AUC": 0.976
+  },
+  {
+    "Model": "decision_tree",
+    "Accuracy": 0.8953,
+    "Precision": 0.4527,
+    "Recall": 0.8909,
+    "F1 Score": 0.6003,
+    "ROC-AUC": 0.9641
+  },
+  {
+    "Model": "logistic",
+    "Accuracy": 0.8857,
+    "Precision": 0.4278,
+    "Recall": 0.8756,
+    "F1 Score": 0.5748,
+    "ROC-AUC": 0.9609
+  }
+]

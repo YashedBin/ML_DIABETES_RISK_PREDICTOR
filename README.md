@@ -20,11 +20,25 @@ This is a course project, not a medical tool.
 pip install -r requirements.txt
 ```
 
-Open `notebook.ipynb` and run all cells.
+Open `notebook.ipynb` and run all cells (EDA + experiments).
+
+**Train the models** (writes `models/logistic.pkl`, `knn.pkl`, `decision_tree.pkl`, `random_forest.pkl`, `metrics.json`):
+
+```bash
+python train.py
+```
+
+**Launch the Streamlit frontend:**
+
+```bash
+streamlit run app.py
+```
 
 ```text
-notebook.ipynb
-preprocessing.py
-models/
+app.py              # Streamlit frontend
+train.py            # trains + exports models
+notebook.ipynb      # EDA + experiments
+preprocessing.py    # shared preprocessing pipeline
+models/             # encoder, scaler, trained models, metrics
 requirements.txt
 ```
