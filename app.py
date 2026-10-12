@@ -62,30 +62,34 @@ def risk_band(prob: float) -> str:
     return "High risk"
 
 
-def prediction_tab(encoder, scaler, metrics):
+def patient_input_form(prefix: str):
     st.subheader("Patient details")
 
     col1, col2 = st.columns(2)
     with col1:
-        age = st.number_input("Age (years)", min_value=1.0, max_value=100.0, value=45.0, step=1.0)
-        gender = st.selectbox("Gender", GENDER_OPTIONS)
-        bmi = st.number_input("BMI", min_value=10.0, max_value=80.0, value=27.0, step=0.1)
-        smoking = st.selectbox("Smoking history", SMOKING_OPTIONS)
+        age = st.number_input("Age (years)", min_value=1.0, max_value=100.0, value=45.0, step=1.0, key=f"{prefix}_age")
+        gender = st.selectbox("Gender", GENDER_OPTIONS, key=f"{prefix}_gender")
+        bmi = st.number_input("BMI", min_value=10.0, max_value=80.0, value=27.0, step=0.1, key=f"{prefix}_bmi")
+        smoking = st.selectbox("Smoking history", SMOKING_OPTIONS, key=f"{prefix}_smoking")
     with col2:
-        hba1c = st.number_input("HbA1c level (%)", min_value=3.0, max_value=9.0, value=5.5, step=0.1)
+        hba1c = st.number_input("HbA1c level (%)", min_value=3.0, max_value=9.0, value=5.5, step=0.1, key=f"{prefix}_hba1c")
         glucose = st.number_input(
-            "Blood glucose level (mg/dL)", min_value=50.0, max_value=300.0, value=100.0, step=1.0
+            "Blood glucose level (mg/dL)", min_value=50.0, max_value=300.0, value=100.0, step=1.0, key=f"{prefix}_glucose"
         )
-        hypertension = st.checkbox("Hypertension")
-        heart_disease = st.checkbox("Heart disease")
+        hypertension = st.checkbox("Hypertension", key=f"{prefix}_hypertension")
+        heart_disease = st.checkbox("Heart disease", key=f"{prefix}_heart_disease")
 
-    model_name = st.selectbox("Model", list(MODEL_FILES.keys()))
+    return age, gender, bmi, hba1c, glucose, hypertension, heart_disease, smoking
 
-    if st.button("Predict", type="primary"):
+
+def prediction_tab(encoder, scaler):
+    inputs = patient_input_form("predict")
+
+    model_name = st.selectbox("Model", list(MODEL_FILES.keys()), key="predict_model")
+
+    if st.button("Predict", type="primary", key="predict_button"):
         model = load_model(MODEL_FILES[model_name])
-        row = build_input_row(
-            age, gender, bmi, hba1c, glucose, hypertension, heart_disease, smoking
-        )
+        row = build_input_row(*inputs)
         X = transform(row, encoder, scaler)
         prob = float(model.predict_proba(X)[:, 1][0])
         pred = int(model.predict(X)[0])
@@ -96,6 +100,42 @@ def prediction_tab(encoder, scaler, metrics):
         c2.metric("Risk probability", f"{prob * 100:.1f}%")
         st.progress(min(prob, 1.0))
         st.caption(f"{model_name} - {risk_band(prob)}")
+
+    st.caption("Course project only - not a medical diagnostic tool.")
+
+
+def all_models_tab(encoder, scaler):
+    inputs = patient_input_form("all")
+
+    if st.button("Simulate all models", type="primary", key="all_button"):
+        row = build_input_row(*inputs)
+        X = transform(row, encoder, scaler)
+
+        results = []
+        for model_name, key in MODEL_FILES.items():
+            model = load_model(key)
+            prob = float(model.predict_proba(X)[:, 1][0])
+            pred = int(model.predict(X)[0])
+            results.append(
+                {
+                    "Model": model_name,
+                    "Prediction": "Diabetic" if pred == 1 else "Non-diabetic",
+                    "Probability": prob,
+                    "Risk band": risk_band(prob),
+                }
+            )
+
+        table = pd.DataFrame(results)
+        diabetic_votes = int((table["Probability"] >= 0.5).sum())
+
+        st.divider()
+        st.dataframe(
+            table.assign(Probability=table["Probability"].map("{:.1%}".format)),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.bar_chart(table.set_index("Model")["Probability"])
+        st.caption(f"{diabetic_votes}/{len(table)} models predict diabetic.")
 
     st.caption("Course project only - not a medical diagnostic tool.")
 
@@ -124,9 +164,11 @@ def main():
         st.error("Model artifacts not found. Run `python train.py` first.")
         st.stop()
 
-    pred_tab, comp_tab = st.tabs(["Prediction", "Model comparison"])
+    pred_tab, all_tab, comp_tab = st.tabs(["Prediction", "All Models", "Model comparison"])
     with pred_tab:
-        prediction_tab(encoder, scaler, metrics)
+        prediction_tab(encoder, scaler)
+    with all_tab:
+        all_models_tab(encoder, scaler)
     with comp_tab:
         comparison_tab(metrics)
 
