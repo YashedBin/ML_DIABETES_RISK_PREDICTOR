@@ -14,6 +14,8 @@ We trained Logistic Regression, KNN, Naive Bayes, Decision Tree, and Random Fore
 
 This is a course project, not a medical tool.
 
+[![Architecture diagram of yashedbin/ml_diabetes_risk_predictor](https://gitdiagram.com/yashedbin/ml_diabetes_risk_predictor/diagram.png)](https://gitdiagram.com/yashedbin/ml_diabetes_risk_predictor?utm_source=readme&utm_medium=picture)
+
 ## Run it
 
 ```bash
