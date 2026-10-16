@@ -1,15 +1,19 @@
-"""Streamlit frontend for the Diabetes Risk Prediction project.
+"""Streamlit frontend for the Diabetes Risk Prediction course project.
 
-Run:
+Run locally:
     streamlit run app.py
 """
+
 import json
+from pathlib import Path
 
 import joblib
 import pandas as pd
 import streamlit as st
 
 from preprocessing import FEATURES, MODEL_DIR, transform
+
+MODEL_DIR = Path(MODEL_DIR)
 
 MODEL_FILES = {
     "Logistic Regression": "logistic",
@@ -22,22 +26,43 @@ GENDER_OPTIONS = ["Female", "Male"]
 SMOKING_OPTIONS = ["No Info", "never", "current", "former", "not current"]
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False, max_entries=1)
 def load_encoder_scaler():
-    encoder = joblib.load(f"{MODEL_DIR}/encoder.pkl")
-    scaler = joblib.load(f"{MODEL_DIR}/scaler.pkl")
+    """Keep shared, read-only preprocessing objects in server memory."""
+    encoder = joblib.load(MODEL_DIR / "encoder.pkl")
+    scaler = joblib.load(MODEL_DIR / "scaler.pkl")
     return encoder, scaler
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False, max_entries=8)
 def load_model(key: str):
-    return joblib.load(f"{MODEL_DIR}/{key}.pkl")
+    """Load an original or tuned model on first use, then reuse it."""
+    return joblib.load(MODEL_DIR / f"{key}.pkl")
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False, ttl=3600)
 def load_metrics():
-    with open(f"{MODEL_DIR}/metrics.json") as f:
-        return pd.DataFrame(json.load(f))
+    """Performance metrics are optional; predictions do not depend on this file."""
+    path = MODEL_DIR / "metrics.json"
+    if not path.exists():
+        return pd.DataFrame()
+    with path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    if isinstance(data, list):
+        return pd.DataFrame(data)
+    if isinstance(data, dict):
+        # Supports both {model_name: {metric: value}} and column-oriented JSON.
+        if all(isinstance(value, dict) for value in data.values()):
+            frame = pd.DataFrame.from_dict(data, orient="index")
+            frame.index.name = "Model"
+            return frame.reset_index()
+        return pd.DataFrame([data])
+    return pd.DataFrame()
+
+
+def get_model_key(model_name: str, tuned: bool) -> str:
+    base = MODEL_FILES[model_name]
+    return f"{base}_tuned" if tuned else base
 
 
 def build_input_row(age, gender, bmi, hba1c, glucose, hypertension, heart_disease, smoking):
@@ -54,123 +79,150 @@ def build_input_row(age, gender, bmi, hba1c, glucose, hypertension, heart_diseas
     return pd.DataFrame([row], columns=FEATURES)
 
 
-def risk_band(prob: float) -> str:
-    if prob < 0.33:
-        return "Low risk"
-    if prob < 0.66:
-        return "Moderate risk"
-    return "High risk"
+def predict_one(model_key: str, patient_values, encoder, scaler):
+    """Run inference. Don't globally cache patient health data across users."""
+    model = load_model(model_key)
+    row = build_input_row(*patient_values)
+    processed = transform(row, encoder, scaler)
+    prediction = int(model.predict(processed)[0])
+    classes = list(model.classes_)
+    positive_index = classes.index(1)
+    probability = float(model.predict_proba(processed)[0, positive_index])
+    return prediction, probability
 
 
 def patient_input_form(prefix: str):
     st.subheader("Patient details")
-
-    col1, col2 = st.columns(2)
-    with col1:
+    left, right = st.columns(2)
+    with left:
         age = st.number_input("Age (years)", min_value=1.0, max_value=100.0, value=45.0, step=1.0, key=f"{prefix}_age")
         gender = st.selectbox("Gender", GENDER_OPTIONS, key=f"{prefix}_gender")
         bmi = st.number_input("BMI", min_value=10.0, max_value=80.0, value=27.0, step=0.1, key=f"{prefix}_bmi")
         smoking = st.selectbox("Smoking history", SMOKING_OPTIONS, key=f"{prefix}_smoking")
-    with col2:
+    with right:
         hba1c = st.number_input("HbA1c level (%)", min_value=3.0, max_value=9.0, value=5.5, step=0.1, key=f"{prefix}_hba1c")
-        glucose = st.number_input(
-            "Blood glucose level (mg/dL)", min_value=50.0, max_value=300.0, value=100.0, step=1.0, key=f"{prefix}_glucose"
-        )
+        glucose = st.number_input("Blood glucose (mg/dL)", min_value=50.0, max_value=300.0, value=100.0, step=1.0, key=f"{prefix}_glucose")
         hypertension = st.checkbox("Hypertension", key=f"{prefix}_hypertension")
         heart_disease = st.checkbox("Heart disease", key=f"{prefix}_heart_disease")
+    return (age, gender, bmi, hba1c, glucose, hypertension, heart_disease, smoking)
 
-    return age, gender, bmi, hba1c, glucose, hypertension, heart_disease, smoking
+
+def show_prediction(prediction: int, probability: float, model_name: str, tuned: bool):
+    st.divider()
+    left, right = st.columns(2)
+    left.metric("Model prediction", "Diabetic" if prediction else "Non-diabetic")
+    right.metric("Model-estimated positive probability", f"{probability:.2%}")
+    st.progress(max(0.0, min(probability, 1.0)))
+    st.caption(f"{model_name} · {'Tuned' if tuned else 'Original'} · Not a clinically validated risk estimate")
 
 
 def prediction_tab(encoder, scaler):
-    inputs = patient_input_form("predict")
+    st.subheader("Diabetes prediction")
+    with st.form("prediction_form"):
+        inputs = patient_input_form("predict")
+        model_name = st.selectbox("Select model", list(MODEL_FILES), key="predict_model")
+        tuned = st.toggle("Use hyperparameter-tuned model", value=False, key="predict_tuned")
+        submitted = st.form_submit_button("Predict", type="primary", use_container_width=True)
 
-    model_name = st.selectbox("Model", list(MODEL_FILES.keys()), key="predict_model")
+    if submitted:
+        model_key = get_model_key(model_name, tuned)
+        try:
+            with st.spinner("Running prediction..."):
+                pred, prob = predict_one(model_key, inputs, encoder, scaler)
+            # Persist only within the visitor's session, rather than the global data cache.
+            st.session_state["last_prediction"] = (pred, prob, model_name, tuned)
+        except FileNotFoundError:
+            st.error(f"Missing model: {model_key}.pkl. Export it before deploying.")
+        except (ValueError, KeyError) as error:
+            st.error(f"Could not process this input: {error}")
 
-    if st.button("Predict", type="primary", key="predict_button"):
-        model = load_model(MODEL_FILES[model_name])
-        row = build_input_row(*inputs)
-        X = transform(row, encoder, scaler)
-        prob = float(model.predict_proba(X)[:, 1][0])
-        pred = int(model.predict(X)[0])
-
-        st.divider()
-        c1, c2 = st.columns(2)
-        c1.metric("Prediction", "Diabetic" if pred == 1 else "Non-diabetic")
-        c2.metric("Risk probability", f"{prob * 100:.1f}%")
-        st.progress(min(prob, 1.0))
-        st.caption(f"{model_name} - {risk_band(prob)}")
-
-    st.caption("Course project only - not a medical diagnostic tool.")
+    if "last_prediction" in st.session_state:
+        show_prediction(*st.session_state["last_prediction"])
+    st.caption("Educational course project only. Not for diagnosis or medical decisions.")
 
 
 def all_models_tab(encoder, scaler):
-    inputs = patient_input_form("all")
+    st.subheader("Compare all four models")
+    with st.form("all_models_form"):
+        inputs = patient_input_form("all")
+        tuned = st.toggle("Use tuned models", value=False, key="all_tuned")
+        submitted = st.form_submit_button("Compare models", type="primary", use_container_width=True)
 
-    if st.button("Simulate all models", type="primary", key="all_button"):
-        row = build_input_row(*inputs)
-        X = transform(row, encoder, scaler)
+    if submitted:
+        try:
+            with st.spinner("Comparing models..."):
+                # Transform once, then reuse for all four models.
+                row = build_input_row(*inputs)
+                processed = transform(row, encoder, scaler)
+                results = []
+                for model_name in MODEL_FILES:
+                    key = get_model_key(model_name, tuned)
+                    model = load_model(key)
+                    prediction = int(model.predict(processed)[0])
+                    positive_index = list(model.classes_).index(1)
+                    probability = float(model.predict_proba(processed)[0, positive_index])
+                    results.append({
+                        "Model": model_name,
+                        "Version": "Tuned" if tuned else "Original",
+                        "Prediction": "Diabetic" if prediction else "Non-diabetic",
+                        "Probability": probability,
+                    })
+            st.session_state["last_comparison"] = pd.DataFrame(results)
+        except FileNotFoundError as error:
+            st.error(f"Missing model artifact: {error}")
+        except (ValueError, KeyError) as error:
+            st.error(f"Could not process this input: {error}")
 
-        results = []
-        for model_name, key in MODEL_FILES.items():
-            model = load_model(key)
-            prob = float(model.predict_proba(X)[:, 1][0])
-            pred = int(model.predict(X)[0])
-            results.append(
-                {
-                    "Model": model_name,
-                    "Prediction": "Diabetic" if pred == 1 else "Non-diabetic",
-                    "Probability": prob,
-                    "Risk band": risk_band(prob),
-                }
-            )
-
-        table = pd.DataFrame(results)
-        diabetic_votes = int((table["Probability"] >= 0.5).sum())
-
-        st.divider()
+    if "last_comparison" in st.session_state:
+        table = st.session_state["last_comparison"]
         st.dataframe(
-            table.assign(Probability=table["Probability"].map("{:.1%}".format)),
+            table.style.format({"Probability": "{:.2%}"}),
             use_container_width=True,
             hide_index=True,
         )
         st.bar_chart(table.set_index("Model")["Probability"])
-        st.caption(f"{diabetic_votes}/{len(table)} models predict diabetic.")
+        diabetic_votes = int((table["Prediction"] == "Diabetic").sum())
+        st.info(f"{diabetic_votes}/{len(table)} models predict diabetic.")
+    st.caption("Educational course project only. Not for diagnosis or medical decisions.")
 
-    st.caption("Course project only - not a medical diagnostic tool.")
 
-
-def comparison_tab(metrics):
-    st.subheader("Model comparison")
-    if metrics is None or metrics.empty:
-        st.info("No metrics found. Run `python train.py` first.")
+def comparison_tab():
+    st.subheader("Model evaluation metrics")
+    try:
+        metrics = load_metrics()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        st.warning(f"Could not load metrics.json: {error}")
+        return
+    if metrics.empty:
+        st.info("No saved evaluation metrics found. Predictions still work without metrics.json.")
+        return
+    if "Model" not in metrics.columns:
+        st.warning("metrics.json must include model names for comparison.")
+        st.dataframe(metrics, use_container_width=True)
         return
     st.dataframe(metrics.set_index("Model"), use_container_width=True)
-
     chart_cols = [c for c in ["F1 Score", "ROC-AUC", "Recall", "Accuracy"] if c in metrics.columns]
-    st.bar_chart(metrics.set_index("Model")[chart_cols])
+    if chart_cols:
+        st.bar_chart(metrics.set_index("Model")[chart_cols])
 
 
 def main():
-    st.set_page_config(page_title="Diabetes Risk Predictor", page_icon="🩺", layout="centered")
+    st.set_page_config(page_title="Diabetes Risk Predictor", page_icon="🩺", layout="wide")
     st.title("Diabetes Risk Predictor")
+    st.write("Compare original and hyperparameter-tuned classifiers using patient measurements.")
 
-    try:
-        encoder, scaler = load_encoder_scaler()
-        metrics = load_metrics()
-        for key in MODEL_FILES.values():
-            load_model(key)
-    except FileNotFoundError:
-        st.error("Model artifacts not found. Run `python train.py` first.")
-        st.stop()
-
-    pred_tab, all_tab, comp_tab = st.tabs(["Prediction", "All Models", "Model comparison"])
+    pred_tab, all_tab, metrics_tab = st.tabs(["Prediction", "All Models", "Model Comparison"])
     with pred_tab:
+        try:
+            encoder, scaler = load_encoder_scaler()
+        except (FileNotFoundError, OSError) as error:
+            st.error(f"Missing preprocessing artifacts: {error}. Run training and export artifacts first.")
+            st.stop()
         prediction_tab(encoder, scaler)
     with all_tab:
         all_models_tab(encoder, scaler)
-    with comp_tab:
-        comparison_tab(metrics)
+    with metrics_tab:
+        comparison_tab()
 
 
 if __name__ == "__main__":
